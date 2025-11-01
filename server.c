@@ -11,8 +11,11 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/types.h>
+#include <math.h>
+#include <stdbool.h>
 
-#define MAX_MSG_LEN 30
+#define MAX_MSG_LEN 500
+#define MAX_SENDING_LEN 30
 #define MAX_REPLY_LEN 300
 
 struct thread_data{
@@ -67,7 +70,7 @@ int make_connect(int socket_id, struct sockaddr_in addr){
 }
 
 int read_msg(int sock, char* buff) {
-    int rc = read(sock, buff, MAX_MSG_LEN - 1);// have start and end byte to see when message ends
+    int rc = read(sock, buff, MAX_SENDING_LEN - 1);// have start and end byte to see when message ends
     if(rc < 0) {
         printf("Error reading\n");
     } else {
@@ -87,6 +90,8 @@ int write_msg(int sock, char* buff) {
     return wc;
 }
 
+
+//checks if buff exceeds max len
 int check_buff(char* buff) {
     size_t len = strlen(buff);
 
@@ -115,7 +120,7 @@ void* recv_msg(void* input) {
 
     // printf("Thread: %d, data pointer %p\n", gettid(), input_data);
 
-    char buff[MAX_MSG_LEN];
+    char buff[MAX_SENDING_LEN];
     memset(buff, 0, sizeof(buff));
     
     while(1) {
@@ -139,21 +144,80 @@ void* send_msg(void* input) {
     int client_socket = input_data -> client_socket;
     int server_socket = input_data -> server_socket;
 
-    char buff[MAX_MSG_LEN];
-    memset(buff, 0, sizeof(buff));
+    char msg[MAX_MSG_LEN];
+    memset(msg, 0, sizeof(msg));
+    char buff[2 * sizeof(int) + MAX_SENDING_LEN]; //[2 (STX), len of msg, msg]
+
+    //msg_len = 35
+    //i = 30, j = 34
+    //                                  i                   j
+    //msg = ['h', 'e', 'l', 'l', 'o'...'e', 'x', 'a', 'm', 'p'] copy to buff
+    //buff =[2, 35, 'h', 'e', 'l', 'l', 'o'...] send this
+    //clear buff
+    //buff =['e', 'x', 'a', 'm', 'p'] send this
 
     while(1) {
-        if (fgets(buff, sizeof(buff), stdin) == NULL) { //send 30 if more than 30, then send remaining message
+        if (fgets(msg, sizeof(msg), stdin) == NULL) {
             // EOF or read error
             printf("\nEnd of input. Exiting.\n");
             break;
         }
 
-        if(check_buff(buff) < 0) {
-            continue;
+        // if(check_buff(msg) < 0) {
+        //     continue;
+        // }
+
+
+        //TO DO: put this parsing in seperate function
+        int msg_len = strlen(msg);
+        buff[0] = 2;
+        buff[1] = msg_len;
+        int i = 0;
+        bool first_sent = false;
+
+        while(msg_len > MAX_SENDING_LEN){
+            char sliced[MAX_SENDING_LEN + 1];
+            for(int idx = 0; idx < MAX_SENDING_LEN; idx++){
+                sliced[idx] = msg[idx + i];
+            }
+
+            if(!first_sent){
+               memcpy(buff + 2, msg + i, MAX_SENDING_LEN); 
+               buff[2 + MAX_SENDING_LEN] = '\0';
+               first_sent = true;
+            } else {
+                memcpy(buff, msg + i, MAX_SENDING_LEN);
+                buff[MAX_SENDING_LEN] = '\0';
+            }
+
+            i += MAX_SENDING_LEN;
+            msg_len -= MAX_SENDING_LEN;
+
+            //then write buff to receiver
+
+            printf("Current buff: %s\n", buff);
+
+            memset(buff, 0, sizeof(buff));
         }
 
-        if(strcmp(buff, "Exit") == 0) {
+        char sliced[MAX_SENDING_LEN + 1];
+        for(int idx = 0; idx < msg_len; idx++){
+            sliced[idx] = msg[idx + i];
+        }
+
+        if(!first_sent){
+            memcpy(buff + 2, msg, MAX_SENDING_LEN); 
+            buff[2 + MAX_SENDING_LEN] = '\0';
+        } else {
+            memcpy(buff, msg + i, MAX_SENDING_LEN);
+            buff[MAX_SENDING_LEN] = '\0';
+        }
+        printf("final buff: %s\n", buff);
+        memset(buff, 0, sizeof(buff));
+        // write_msg(client_socket, msg);
+        
+
+        if(strcmp(msg, "Exit") == 0) {
             printf("Exiting\n");
             
             if(server_socket) {
@@ -168,9 +232,9 @@ void* send_msg(void* input) {
             return NULL;
         }
 
-        write_msg(client_socket, buff);
+        // write_msg(client_socket, msg);
 
-        memset(buff, 0, sizeof(buff));
+        // memset(msg, 0, sizeof(msg));
     }
 }
 
@@ -239,5 +303,5 @@ int main(int argc, char* argv[]) {
 
 //Exit str doesnt end other connection
 //
-//protocal for sending msg, STX len maybe checksum (no need for ETX bc of len)
+//protocal for sending msg, STX, len, maybe checksum (no need for ETX bc of len)
 //if len is < 255 send one byte as its val
