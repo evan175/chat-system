@@ -122,16 +122,63 @@ void* recv_msg(void* input) {
 
     char buff[MAX_SENDING_LEN];
     memset(buff, 0, sizeof(buff));
+    char msg[MAX_MSG_LEN];
+    memset(msg, 0, sizeof(msg));
     
     while(1) {
+        int msg_len;
+        int curr_len = 0;
+
         int rc = read_msg(*sock_id, buff);
+
+        msg_len = buff[1];
+        
+        //TODO: handle msg parsing in while loop
+        bool first_read = true;
+        int msg_idx = 0;
+        while(curr_len < msg_len) {
+            //append buff to msg
+            int i;
+            int str_len;
+            if(first_read) {
+                i = 2; //skip stx and len bytes
+                str_len = strlen(buff) - 2;
+                first_read = false;
+            } else {
+                i = 0;
+                str_len = strlen(buff);
+            }
+            memcpy(msg + msg_idx, buff + i, str_len);
+            
+            msg_idx += str_len;
+            curr_len += str_len;
+
+            printf("Current msg: %s\n", msg);
+            // printf("curr len: %d, msg len: %d\n", curr_len, msg_len);
+
+            if(curr_len >= msg_len) {
+                break;
+            }
+
+            memset(buff, 0, sizeof(buff));
+            rc = read_msg(*sock_id, buff);
+        };
+
         // printf("rc: %i\n", rc);
         if(rc == 0) {
             printf("Connection has closed\n");
             return NULL;
         }
 
-        printf("Message Received: : %s\n", buff);  
+        /* Ensure assembled message is null-terminated and print it. */
+        if (msg_idx >= 0 && msg_idx < (int)sizeof(msg)) {
+            msg[msg_idx] = '\0';
+        } else {
+            /* Safety: make sure string is terminated */
+            msg[sizeof(msg) - 1] = '\0';
+        }
+
+        printf("Message Received: %s\n", msg);
     }
 }
 
@@ -147,14 +194,6 @@ void* send_msg(void* input) {
     char msg[MAX_MSG_LEN];
     memset(msg, 0, sizeof(msg));
     char buff[2 * sizeof(int) + MAX_SENDING_LEN]; //[2 (STX), len of msg, msg]
-
-    //msg_len = 35
-    //i = 30, j = 34
-    //                                  i                   j
-    //msg = ['h', 'e', 'l', 'l', 'o'...'e', 'x', 'a', 'm', 'p'] copy to buff
-    //buff =[2, 35, 'h', 'e', 'l', 'l', 'o'...] send this
-    //clear buff
-    //buff =['e', 'x', 'a', 'm', 'p'] send this
 
     while(1) {
         if (fgets(msg, sizeof(msg), stdin) == NULL) {
@@ -176,11 +215,13 @@ void* send_msg(void* input) {
         bool first_sent = false;
 
         while(msg_len > MAX_SENDING_LEN){
+            //slice and send chunk of msg
             char sliced[MAX_SENDING_LEN + 1];
             for(int idx = 0; idx < MAX_SENDING_LEN; idx++){
                 sliced[idx] = msg[idx + i];
             }
 
+            //check if first sent to append msg after stx and msg_len in buff
             if(!first_sent){
                memcpy(buff + 2, msg + i, MAX_SENDING_LEN); 
                buff[2 + MAX_SENDING_LEN] = '\0';
@@ -193,13 +234,14 @@ void* send_msg(void* input) {
             i += MAX_SENDING_LEN;
             msg_len -= MAX_SENDING_LEN;
 
-            //then write buff to receiver
+            // printf("Current buff: %s\n", buff);
 
-            printf("Current buff: %s\n", buff);
+            write_msg(client_socket, buff);
 
             memset(buff, 0, sizeof(buff));
         }
 
+        //send remaining msg
         char sliced[MAX_SENDING_LEN + 1];
         for(int idx = 0; idx < msg_len; idx++){
             sliced[idx] = msg[idx + i];
@@ -212,9 +254,9 @@ void* send_msg(void* input) {
             memcpy(buff, msg + i, MAX_SENDING_LEN);
             buff[MAX_SENDING_LEN] = '\0';
         }
-        printf("final buff: %s\n", buff);
-        memset(buff, 0, sizeof(buff));
-        // write_msg(client_socket, msg);
+    // printf("final buff: %s\n", buff);
+    /* Don't clear the buffer before sending the final chunk. */
+    write_msg(client_socket, buff);
         
 
         if(strcmp(msg, "Exit") == 0) {
@@ -305,3 +347,4 @@ int main(int argc, char* argv[]) {
 //
 //protocal for sending msg, STX, len, maybe checksum (no need for ETX bc of len)
 //if len is < 255 send one byte as its val
+//make server supports multiple clients, when receives msg from a client send it to all other clients. server shouild have list of client sockets. use poll(). 1 thread for waiting for new conns, 1 thread for reading and wiritng to other sockets. or 1 thread with poll() timeout and call poll() on clients . no keyboard input for server. keep list of socket clients
