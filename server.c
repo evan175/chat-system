@@ -91,7 +91,7 @@ int write_msg(int sock, char* buff) {
 }
 
 
-//checks if buff exceeds max len
+//checks if buff exceeds max len. pre header sending
 int check_buff(char* buff) {
     size_t len = strlen(buff);
 
@@ -133,7 +133,6 @@ void* recv_msg(void* input) {
 
         msg_len = buff[1];
         
-        //TODO: handle msg parsing in while loop
         bool first_read = true;
         int msg_idx = 0;
         while(curr_len < msg_len) {
@@ -153,7 +152,7 @@ void* recv_msg(void* input) {
             msg_idx += str_len;
             curr_len += str_len;
 
-            printf("Current msg: %s\n", msg);
+            // printf("Current msg: %s\n", msg);
             // printf("curr len: %d, msg len: %d\n", curr_len, msg_len);
 
             if(curr_len >= msg_len) {
@@ -179,7 +178,53 @@ void* recv_msg(void* input) {
         }
 
         printf("Message Received: %s\n", msg);
+        memset(msg, 0, sizeof(msg));
     }
+}
+
+//slices msg and copies sliced portion to to_snd
+void slice_msg(int i, bool first_sent, char* to_snd, char* msg) {
+    char sliced[MAX_SENDING_LEN + 1];
+    for(int idx = 0; idx < MAX_SENDING_LEN; idx++){
+        sliced[idx] = msg[idx + i];
+    }
+
+    //check if first sent to append msg after stx and msg_len in buff
+    if(!first_sent){
+        memcpy(to_snd + 2, msg + i, MAX_SENDING_LEN); 
+        to_snd[2 + MAX_SENDING_LEN] = '\0';
+
+    } else {
+        memcpy(to_snd, msg + i, MAX_SENDING_LEN);
+        to_snd[MAX_SENDING_LEN] = '\0';
+    }
+}
+
+void slice_snd(int msg_len, char* to_snd, char* msg, int client_socket) {//ask about error handling here
+    int i = 0;
+    bool first_sent = false;
+
+    while(msg_len > MAX_SENDING_LEN){
+        slice_msg(i, first_sent, to_snd, msg);
+        
+        i += MAX_SENDING_LEN;
+        msg_len -= MAX_SENDING_LEN;
+
+        //printf("Current buff: %s\n", buff);
+
+        write_msg(client_socket, to_snd);
+
+        if (!first_sent) first_sent = true;
+
+        memset(to_snd, 0, sizeof(to_snd));
+    }
+
+    //send leftover msg
+    slice_msg(i, first_sent, to_snd, msg);
+    
+    // printf("final buff: %s\n", buff);
+    /* Don't clear the buffer before sending the final chunk. */
+    write_msg(client_socket, to_snd);
 }
 
 void* send_msg(void* input) {
@@ -202,63 +247,17 @@ void* send_msg(void* input) {
             break;
         }
 
+        //this check is pre header sending 
         // if(check_buff(msg) < 0) {
         //     continue;
         // }
 
-
-        //TO DO: put this parsing in seperate function
         int msg_len = strlen(msg);
         buff[0] = 2;
         buff[1] = msg_len;
-        int i = 0;
-        bool first_sent = false;
 
-        while(msg_len > MAX_SENDING_LEN){
-            //slice and send chunk of msg
-            char sliced[MAX_SENDING_LEN + 1];
-            for(int idx = 0; idx < MAX_SENDING_LEN; idx++){
-                sliced[idx] = msg[idx + i];
-            }
-
-            //check if first sent to append msg after stx and msg_len in buff
-            if(!first_sent){
-               memcpy(buff + 2, msg + i, MAX_SENDING_LEN); 
-               buff[2 + MAX_SENDING_LEN] = '\0';
-               first_sent = true;
-            } else {
-                memcpy(buff, msg + i, MAX_SENDING_LEN);
-                buff[MAX_SENDING_LEN] = '\0';
-            }
-
-            i += MAX_SENDING_LEN;
-            msg_len -= MAX_SENDING_LEN;
-
-            // printf("Current buff: %s\n", buff);
-
-            write_msg(client_socket, buff);
-
-            memset(buff, 0, sizeof(buff));
-        }
-
-        //send remaining msg
-        char sliced[MAX_SENDING_LEN + 1];
-        for(int idx = 0; idx < msg_len; idx++){
-            sliced[idx] = msg[idx + i];
-        }
-
-        if(!first_sent){
-            memcpy(buff + 2, msg, MAX_SENDING_LEN); 
-            buff[2 + MAX_SENDING_LEN] = '\0';
-        } else {
-            memcpy(buff, msg + i, MAX_SENDING_LEN);
-            buff[MAX_SENDING_LEN] = '\0';
-        }
-    // printf("final buff: %s\n", buff);
-    /* Don't clear the buffer before sending the final chunk. */
-    write_msg(client_socket, buff);
+        slice_snd(msg_len, buff, msg, client_socket);
         
-
         if(strcmp(msg, "Exit") == 0) {
             printf("Exiting\n");
             
@@ -345,6 +344,10 @@ int main(int argc, char* argv[]) {
 
 //Exit str doesnt end other connection
 //
-//protocal for sending msg, STX, len, maybe checksum (no need for ETX bc of len)
-//if len is < 255 send one byte as its val
-//make server supports multiple clients, when receives msg from a client send it to all other clients. server shouild have list of client sockets. use poll(). 1 thread for waiting for new conns, 1 thread for reading and wiritng to other sockets. or 1 thread with poll() timeout and call poll() on clients . no keyboard input for server. keep list of socket clients
+
+//TODO:
+/*make server supports multiple clients, when receives msg from a client send it to all other 
+clients. server shouild have list of client sockets. use poll(). 1 thread for waiting for 
+new conns, 1 thread for reading and wiritng to other sockets. or 1 thread with poll() 
+timeout and call poll() on clients . no keyboard input for server. keep list of socket 
+clients*/
