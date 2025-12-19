@@ -13,10 +13,15 @@
 #include <sys/types.h>
 #include <math.h>
 #include <stdbool.h>
+#include <poll.h>
 
 #define MAX_MSG_LEN 500
 #define MAX_SENDING_LEN 30
 #define MAX_REPLY_LEN 300
+#define MAX_CLIENTS 10
+
+struct pollfd pfds[MAX_CLIENTS + 1];
+int fd_count = 1;
 
 struct thread_data{
     int server_socket;
@@ -91,7 +96,7 @@ int write_msg(int sock, char* buff) {
 }
 
 
-//checks if buff exceeds max len. pre header sending
+//checks if buff exceeds max len. pre header sending version
 int check_buff(char* buff) {
     size_t len = strlen(buff);
 
@@ -114,12 +119,8 @@ int check_buff(char* buff) {
     }
 }
 
-void* recv_msg(void* input) {
-    int* sock_id;
-    sock_id = (int*) input;
-
-    // printf("Thread: %d, data pointer %p\n", gettid(), input_data);
-
+//receive and assemble msg
+char* recv_msg(int* sock_id) {
     char buff[MAX_SENDING_LEN];
     memset(buff, 0, sizeof(buff));
     char msg[MAX_MSG_LEN];
@@ -180,6 +181,20 @@ void* recv_msg(void* input) {
         printf("Message Received: %s\n", msg);
         memset(msg, 0, sizeof(msg));
     }
+
+    char *return_msg = malloc(MAX_MSG_LEN);
+    strcpy(return_msg, msg);
+    return return_msg;
+}
+
+//recv msg thread
+void* recv_msg_thr(void* input) {
+    int* sock_id;
+    sock_id = (int*) input;
+
+    // printf("Thread: %d, data pointer %p\n", gettid(), input_data);
+
+    recv_msg(sock_id);
 }
 
 //slices msg and copies sliced portion to to_snd
@@ -200,6 +215,7 @@ void slice_msg(int i, bool first_sent, char* to_snd, char* msg) {
     }
 }
 
+//slices and sends msg in chunks
 void slice_snd(int msg_len, char* to_snd, char* msg, int client_socket) {//ask about error handling here
     int i = 0;
     bool first_sent = false;
@@ -227,6 +243,7 @@ void slice_snd(int msg_len, char* to_snd, char* msg, int client_socket) {//ask a
     write_msg(client_socket, to_snd);
 }
 
+//user input then send
 void* send_msg(void* input) {
     struct thread_data *input_data;
     input_data = (struct thread_data *) input;
@@ -247,7 +264,7 @@ void* send_msg(void* input) {
             break;
         }
 
-        //this check is pre header sending 
+        //this check is pre header sending version
         // if(check_buff(msg) < 0) {
         //     continue;
         // }
@@ -276,6 +293,61 @@ void* send_msg(void* input) {
         // write_msg(client_socket, msg);
 
         // memset(msg, 0, sizeof(msg));
+    }
+}
+
+void* server_accept(void* input) {
+    int* socket_id = (int*) input;
+
+    while(1) {
+        int poll_count = poll(pfds, fd_count, -1);
+
+        if (poll_count < 0) {
+            perror("poll");
+            exit(1);
+        }
+
+        if(fd_count > MAX_CLIENTS - 1) {
+            printf("Max clients reached, cannot accept more connections\n");
+            sleep(3);
+            continue;
+        }
+
+        if(pfds[0].revents & POLLIN ){
+            int client_sock = accept_conns(*socket_id);
+
+            if(client_sock > 0) {
+                printf("Connected to new client\n");
+            } else {
+                continue;
+            }
+
+            pfds[fd_count].fd = client_sock;
+            pfds[fd_count].events = POLLIN;
+
+            fd_count++;
+        }
+        
+    }
+}
+
+//reads msgs from clients and sends them to all other clients
+void* server_msg_process(void* input) {
+    while(1) {
+        int poll_count = poll(pfds, fd_count, -1);
+
+        if (poll_count < 0) {
+            perror("poll");
+            exit(1);
+        }
+
+        int i;
+        for (i = 1; i < fd_count; i++) {
+            if (pfds[i].revents & POLLIN) {
+                void* client_sock = (void*) &pfds[i].fd;
+                //TODO: make recv msg return msg if possible
+            }
+        }
     }
 }
 
@@ -317,6 +389,12 @@ int main(int argc, char* argv[]) {
         if(client_socket > 0) {
             printf("Connected\n");
         }
+
+        // pfds[0].fd = socket_id;
+        // pfds[0].events = POLLIN;
+
+        // pthread_t accept_thread;
+        // pthread_create(&accept_thread, NULL, (void *) server_accept, (void *) socket_id);
     }
 
     if(strcmp(mode, "client") == 0) {
@@ -333,7 +411,7 @@ int main(int argc, char* argv[]) {
     pthread_t write_thread;
 
     pthread_create(&write_thread, NULL, send_msg, (void *) td);
-    pthread_create(&read_thread, NULL, recv_msg, (void *) &td->client_socket);
+    pthread_create(&read_thread, NULL, recv_msg_thr, (void *) &td->client_socket);
 
     pthread_join(write_thread, NULL);
     pthread_join(read_thread, NULL);
@@ -350,4 +428,13 @@ int main(int argc, char* argv[]) {
 clients. server shouild have list of client sockets. use poll(). 1 thread for waiting for 
 new conns, 1 thread for reading and wiritng to other sockets. or 1 thread with poll() 
 timeout and call poll() on clients . no keyboard input for server. keep list of socket 
-clients*/
+clients
+
+for server, create thread for reading from clients (recv_msg) then writing that client msg to 
+all other clients (slice_snd) and thread for listening and storing client sockets in list 
+(accept_conns). for client, same as now.
+
+in accepting conns thread for server, infinite loop accpeitng and adding client socks to 
+global arr. in reading thread for server, use poll() on client socks arr with timeout, if data
+available read from that sock and send to all other socks in arr.
+*/
