@@ -20,6 +20,7 @@
 #define MAX_REPLY_LEN 300
 #define MAX_CLIENTS 10
 
+//created different var for server
 struct pollfd pfds[MAX_CLIENTS + 1];
 int fd_count = 1;
 
@@ -301,6 +302,7 @@ void* server_accept(void* input) {
 
     while(1) {
         int poll_count = poll(pfds, fd_count, -1);
+        //lock here
 
         if (poll_count < 0) {
             perror("poll");
@@ -325,6 +327,7 @@ void* server_accept(void* input) {
             pfds[fd_count].fd = client_sock;
             pfds[fd_count].events = POLLIN;
 
+            //lock here
             fd_count++;
         }
         
@@ -332,20 +335,41 @@ void* server_accept(void* input) {
 }
 
 //reads msgs from clients and sends them to all other clients
+//TODO Check if client closes and handle it
 void* server_msg_process(void* input) {
     while(1) {
-        int poll_count = poll(pfds, fd_count, -1);
+        int i;
 
-        if (poll_count < 0) {
+        int poll_cnt = poll(pfds, fd_count, 1000); 
+
+        if (poll_cnt < 0) {
             perror("poll");
             exit(1);
         }
 
-        int i;
-        for (i = 1; i < fd_count; i++) {
+        if(poll_cnt > 0) printf("reading poll count: %d\n", poll_cnt);
+        for (i = 1; i < fd_count && poll_cnt > 0; i++) {
             if (pfds[i].revents & POLLIN) {
-                void* client_sock = (void*) &pfds[i].fd;
-                //TODO: make recv msg return msg if possible
+                printf("entered client i = %d\n", i);
+                 //TODO NOT REACHING HERE
+                int* client_sock = (int*) &pfds[i].fd;
+                
+                char* msg = recv_msg((int*) client_sock);
+
+                int j;
+                for(j = 1; j < fd_count; j++) {
+                    if(j != i) {
+                        printf("forwarding to client j = %d\n", j);
+                        int other_client_sock = pfds[j].fd;
+                        
+                        struct thread_data td;
+                        td.client_socket = other_client_sock;
+                        char buff[2 * sizeof(int) + MAX_SENDING_LEN];
+                        buff[0] = 2;
+                        buff[1] = strlen(msg);
+                        slice_snd(strlen(msg), buff, msg, other_client_sock);
+                    }
+                }
             }
         }
     }
@@ -381,20 +405,25 @@ int main(int argc, char* argv[]) {
             printf("Errno: %d\n", errno);
         }
 
-        int client_socket = accept_conns(socket_id);
+        // int client_socket = accept_conns(socket_id);
 
-        td->client_socket = client_socket;
-        td->server_socket = socket_id;
+        // td->client_socket = client_socket;
+        // td->server_socket = socket_id;
 
-        if(client_socket > 0) {
-            printf("Connected\n");
-        }
+        // if(client_socket > 0) {
+        //     printf("Connected\n");
+        // }
 
-        // pfds[0].fd = socket_id;
-        // pfds[0].events = POLLIN;
+        pfds[0].fd = socket_id;
+        pfds[0].events = POLLIN;
 
-        // pthread_t accept_thread;
-        // pthread_create(&accept_thread, NULL, (void *) server_accept, (void *) socket_id);
+        pthread_t accept_thread;
+        pthread_t server_process_msg_thread;
+        pthread_create(&accept_thread, NULL, (void *) server_accept, (void *) &socket_id);
+        pthread_create(&server_process_msg_thread, NULL, (void *) server_msg_process, NULL);
+
+        pthread_join(accept_thread, NULL);
+        pthread_join(server_process_msg_thread, NULL);
     }
 
     if(strcmp(mode, "client") == 0) {
@@ -402,19 +431,26 @@ int main(int argc, char* argv[]) {
             printf("Connected\n");
         }
 
-        
+        pthread_t read_thread;
+        pthread_t write_thread;
+
+        pthread_create(&write_thread, NULL, send_msg, (void *) td);
+        pthread_create(&read_thread, NULL, recv_msg_thr, (void *) &td->client_socket);
+
+        pthread_join(write_thread, NULL);
+        pthread_join(read_thread, NULL);
 
         td->client_socket = socket_id;
     }
 
-    pthread_t read_thread;
-    pthread_t write_thread;
+    // pthread_t read_thread;
+    // pthread_t write_thread;
 
-    pthread_create(&write_thread, NULL, send_msg, (void *) td);
-    pthread_create(&read_thread, NULL, recv_msg_thr, (void *) &td->client_socket);
+    // pthread_create(&write_thread, NULL, send_msg, (void *) td);
+    // pthread_create(&read_thread, NULL, recv_msg_thr, (void *) &td->client_socket);
 
-    pthread_join(write_thread, NULL);
-    pthread_join(read_thread, NULL);
+    // pthread_join(write_thread, NULL);
+    // pthread_join(read_thread, NULL);
 
     printf("exiting\n");
 
