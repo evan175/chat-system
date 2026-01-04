@@ -1,7 +1,11 @@
-all: server
+all: server client
 
-server: server.c
-	gcc -o server server.c -lm
+server: server.c common.h
+	gcc -o server server.c common.c -lm
+
+client: client.c common.h
+	gcc -o client client.c common.c -lm
+	
 
 clean:
-	rm server
+	rm server client
