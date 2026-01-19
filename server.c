@@ -15,8 +15,18 @@
 #include <stdbool.h>
 #include <poll.h>
 #include "common.h"
+#include <time.h>
 
 #define MAX_CLIENTS 10
+
+struct msg_packet {
+    int length;
+    char* msg;
+    char* timestamp;
+};
+
+struct msg_packet *msg_history;
+int msg_history_count = 0;
 
 struct pollfd pfds_clients[MAX_CLIENTS];
 int fd_count = 0;
@@ -84,6 +94,43 @@ void* server_accept(struct pollfd * pfds_server_ptr) {
     }
 }
 
+struct msg_packet create_msg_packet(char* msg) {
+    struct msg_packet new_msg;
+    
+    new_msg.length = strlen(msg);
+    new_msg.msg = malloc((strlen(msg) + 1) * sizeof(char));
+
+    if(new_msg.msg == NULL) {
+        printf("Memory allocation failed for msg\n");
+        exit(1);
+    }
+
+    strcpy(new_msg.msg, msg);
+
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char buffer[64];
+    strftime(buffer, sizeof(buffer),"%Y-%m-%d %H:%M:%S", t);
+    new_msg.timestamp = malloc((strlen(buffer) + 1) * sizeof(char));
+    strcpy(new_msg.timestamp, buffer);
+
+    return new_msg;
+}
+
+void store_msg(struct msg_packet new_msg) {
+    if(msg_history_count % 5 == 0 && msg_history_count > 0) {
+        struct msg_packet* temp = realloc(msg_history, (msg_history_count + 5) * sizeof(struct msg_packet));
+        if(temp == NULL) {
+            printf("Memory reallocation failed for msg_history\n");
+            exit(1);
+        }
+        msg_history = temp;
+        temp = NULL;
+    }   
+    msg_history[msg_history_count] = new_msg;
+    msg_history_count++;
+}
+
 //reads msgs from clients and sends them to all other clients
 void* server_msg_process(void* input) {
     printf("%s() Waiting for incoming data\n", __FUNCTION__);
@@ -91,7 +138,7 @@ void* server_msg_process(void* input) {
         
         int i;
         for (i = 0; i < fd_count; i++) {
-            printf("Setting i=%d fd=%d\n", i, pfds_clients[i].fd);
+            // printf("Setting i=%d fd=%d\n", i, pfds_clients[i].fd);
             pfds_clients[i].events = POLLIN;
         }
 
@@ -119,6 +166,18 @@ void* server_msg_process(void* input) {
                 }
 
                 printf("Data found from client.  i=%d msg='%s'\n", i, msg);
+
+                printf("All messages so far:\n");
+                int k;
+                for(k = 0; k < msg_history_count; k++) {
+                    printf("msg %d: %s (len=%d) at %s\n", k, msg_history[k].msg, msg_history[k].length, msg_history[k].timestamp);
+                }
+
+                //add msg to history
+                struct msg_packet new_msg = create_msg_packet(msg);
+
+                printf("Storing new msg: %s at %s\n", new_msg.msg, new_msg.timestamp);
+                store_msg(new_msg);
 
                 int j;
                 for(j = 0; j < fd_count; j++) {
@@ -169,6 +228,8 @@ int main(int argc, char* argv[]) {
     pfds_server.fd = socket_id;
     pfds_server.events = POLLIN;
 
+    msg_history = malloc(5 * sizeof(struct msg_packet));
+
     pthread_t accept_thread;
     pthread_t server_process_msg_thread;
     pthread_create(&accept_thread, NULL, (void *) server_accept, &pfds_server);
@@ -182,3 +243,7 @@ int main(int argc, char* argv[]) {
 }
 
 //Exit str doesnt end other connection
+
+//todo: when server receives msg from a client, print history of all msgs from all clients use
+//a list to store msgs (dynamic memory allocation). each item in the list should be a struct
+//with additional info like timestamp, client id etc.
