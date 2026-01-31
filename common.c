@@ -159,7 +159,7 @@ void slice_msg(int i, bool first_sent, char* to_snd, char* msg) {
 }
 
 //slices and sends msg in chunks
-void slice_snd(int msg_len, char* to_snd, char* msg, int client_socket) {//ask about error handling here
+void slice_snd(int msg_len, char* to_snd, char* msg, int client_socket) {
     int i = 0;
     bool first_sent = false;
 

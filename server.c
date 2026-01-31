@@ -19,14 +19,17 @@
 
 #define MAX_CLIENTS 10
 
-struct msg_packet {
+typedef struct msg_node {
+    int client_id;
     int length;
     char* msg;
     char* timestamp;
-};
+    struct msg_node* next;
+    struct msg_node* prev;
+} msg_node;
 
-struct msg_packet *msg_history;
-int msg_history_count = 0;
+msg_node *head;
+msg_node *tail;
 
 struct pollfd pfds_clients[MAX_CLIENTS];
 int fd_count = 0;
@@ -87,6 +90,16 @@ void* server_accept(struct pollfd * pfds_server_ptr) {
             pfds_clients[fd_count].fd = client_sock;
             pfds_clients[fd_count].events = POLLIN;
 
+            //send all previous msgs to new client
+            msg_node *tmp = head;
+            while(tmp != NULL) {
+                char buff[2 * sizeof(int) + MAX_SENDING_LEN];
+                buff[0] = 2;
+                buff[1] = tmp->length;
+                slice_snd(tmp->length, buff, tmp->msg, client_sock);
+                tmp = tmp->next;
+            }
+
             //lock here
             fd_count++;
         }
@@ -94,41 +107,66 @@ void* server_accept(struct pollfd * pfds_server_ptr) {
     }
 }
 
-struct msg_packet create_msg_packet(char* msg) {
-    struct msg_packet new_msg;
+msg_node* create_msg_node(char* msg, int client_id) {
+    msg_node* new_msg = malloc(sizeof(msg_node));
     
-    new_msg.length = strlen(msg);
-    new_msg.msg = malloc((strlen(msg) + 1) * sizeof(char));
+    if(new_msg == NULL) {
+        printf("Memory allocation failed for node\n");
+        exit(1);
+    }
 
-    if(new_msg.msg == NULL) {
+    new_msg->client_id = client_id;
+
+    new_msg->length = strlen(msg);
+    new_msg->msg = malloc((strlen(msg) + 1) * sizeof(char));
+
+    if(new_msg->msg == NULL) {
         printf("Memory allocation failed for msg\n");
         exit(1);
     }
 
-    strcpy(new_msg.msg, msg);
+    strcpy(new_msg->msg, msg);
 
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
     char buffer[64];
     strftime(buffer, sizeof(buffer),"%Y-%m-%d %H:%M:%S", t);
-    new_msg.timestamp = malloc((strlen(buffer) + 1) * sizeof(char));
-    strcpy(new_msg.timestamp, buffer);
+    new_msg->timestamp = malloc((strlen(buffer) + 1) * sizeof(char));
+    strcpy(new_msg->timestamp, buffer);
+    new_msg->next = NULL;
 
     return new_msg;
 }
 
-void store_msg(struct msg_packet new_msg) {
-    if(msg_history_count % 5 == 0 && msg_history_count > 0) {
-        struct msg_packet* temp = realloc(msg_history, (msg_history_count + 5) * sizeof(struct msg_packet));
-        if(temp == NULL) {
-            printf("Memory reallocation failed for msg_history\n");
-            exit(1);
-        }
-        msg_history = temp;
-        temp = NULL;
-    }   
-    msg_history[msg_history_count] = new_msg;
-    msg_history_count++;
+void store_msg(msg_node* new_msg) {
+    if(head == NULL) {
+        head = new_msg;
+        tail = head;
+    } else {
+        tail->next = new_msg;
+        new_msg->prev = tail;
+        tail = tail->next;
+    }
+}
+
+void delete_msg(msg_node* msg) {
+    if(msg == NULL) return;
+
+    if(msg->prev != NULL) {
+        msg->prev->next = msg->next;
+    } else {
+        head = msg->next;
+    }
+
+    if(msg->next != NULL) {
+        msg->next->prev = msg->prev;
+    } else {
+        tail = msg->prev;
+    }
+
+    free(msg->msg);
+    free(msg->timestamp);
+    free(msg);
 }
 
 //reads msgs from clients and sends them to all other clients
@@ -162,21 +200,33 @@ void* server_msg_process(void* input) {
                     close(pfds_clients[i].fd);
                     pfds_clients[i] = pfds_clients[fd_count - 1];
                     fd_count--;
+
+                    //delete all messages from this client
+                    msg_node* current = head;
+                    while(current != NULL) {
+                        msg_node* next = current->next;
+                        if(current->client_id == i) {
+                            delete_msg(current);
+                        }
+                        current = next;
+                    }
+                    
                     continue;
                 }
 
                 printf("Data found from client.  i=%d msg='%s'\n", i, msg);
 
                 printf("All messages so far:\n");
-                int k;
-                for(k = 0; k < msg_history_count; k++) {
-                    printf("msg %d: %s (len=%d) at %s\n", k, msg_history[k].msg, msg_history[k].length, msg_history[k].timestamp);
+                msg_node* current = head;
+                while(current != NULL) {
+                    printf("msg: %s at %s\n", current->msg, current->timestamp);
+                    current = current->next;
                 }
 
                 //add msg to history
-                struct msg_packet new_msg = create_msg_packet(msg);
+                msg_node* new_msg = create_msg_node(msg, i);
 
-                printf("Storing new msg: %s at %s\n", new_msg.msg, new_msg.timestamp);
+                printf("Storing new msg: %s at %s\n", new_msg->msg, new_msg->timestamp);
                 store_msg(new_msg);
 
                 int j;
@@ -184,7 +234,7 @@ void* server_msg_process(void* input) {
                     if(j != i) {
                         printf("forwarding to client j=%d msg=%s\n", j, msg);
                         int other_client_sock = pfds_clients[j].fd;
-                        
+
                         char buff[2 * sizeof(int) + MAX_SENDING_LEN];
                         buff[0] = 2;
                         buff[1] = strlen(msg);
@@ -228,7 +278,8 @@ int main(int argc, char* argv[]) {
     pfds_server.fd = socket_id;
     pfds_server.events = POLLIN;
 
-    msg_history = malloc(5 * sizeof(struct msg_packet));
+    head = NULL;
+    tail = NULL;
 
     pthread_t accept_thread;
     pthread_t server_process_msg_thread;
@@ -243,7 +294,5 @@ int main(int argc, char* argv[]) {
 }
 
 //Exit str doesnt end other connection
-
-//todo: when server receives msg from a client, print history of all msgs from all clients use
-//a list to store msgs (dynamic memory allocation). each item in the list should be a struct
-//with additional info like timestamp, client id etc.
+//when a client disconnects, remove all msgs from the client in the list. make sure to deallocate all info in each node
+//when a client connects, receivs all msgs from history
