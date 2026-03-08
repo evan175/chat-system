@@ -16,20 +16,10 @@
 #include <poll.h>
 #include "common.h"
 #include <time.h>
+#include "json_functions.h"
+#include <limits.h>
 
 #define MAX_CLIENTS 10
-
-typedef struct msg_node {
-    int client_id;
-    int length;
-    char* msg;
-    char* timestamp;
-    struct msg_node* next;
-    struct msg_node* prev;
-} msg_node;
-
-msg_node *head;
-msg_node *tail;
 
 struct pollfd pfds_clients[MAX_CLIENTS];
 int fd_count = 0;
@@ -90,16 +80,6 @@ void* server_accept(struct pollfd * pfds_server_ptr) {
             pfds_clients[fd_count].fd = client_sock;
             pfds_clients[fd_count].events = POLLIN;
 
-            //send all previous msgs to new client
-            msg_node *tmp = head;
-            while(tmp != NULL) {
-                char buff[2 * sizeof(int) + MAX_SENDING_LEN];
-                buff[0] = 2;
-                buff[1] = tmp->length;
-                slice_snd(tmp->length, buff, tmp->msg, client_sock);
-                tmp = tmp->next;
-            }
-
             //lock here
             fd_count++;
         }
@@ -107,69 +87,41 @@ void* server_accept(struct pollfd * pfds_server_ptr) {
     }
 }
 
-msg_node* create_msg_node(char* msg, int client_id) {
-    msg_node* new_msg = malloc(sizeof(msg_node));
+bool is_int(char* str) {
+    errno = 0; // Clear errno before the call
+    char *endptr;
+    long value = strtol(str, &endptr, 10);
+
+    // Check for various possible errors
+    if (endptr == str) {
+        printf("No digits were found: '%s' is not an integer.\\n", str);
+        return false;
+    } else if (*endptr != '\0') {
+        printf("Trailing characters found: '%s' is not a complete integer.\\n", str);
+        return false;
+    } else if ((errno == ERANGE && (value == LONG_MAX || value == LONG_MIN))) {
+        printf("Value out of range for long int: '%s'.\\n", str);
+        return false;
+    }
+
+    return true;
+}
+
+void store_val(char* key, int val) {
+    set_val(key, val);
+}
+
+int retrieve_val(char* key) {
+    int val = get_val(key);
     
-    if(new_msg == NULL) {
-        printf("Memory allocation failed for node\n");
-        exit(1);
+    if(val == -1) {
+        printf("Error retrieving value for key '%s'\n", key);
     }
 
-    new_msg->client_id = client_id;
-
-    new_msg->length = strlen(msg);
-    new_msg->msg = malloc((strlen(msg) + 1) * sizeof(char));
-
-    if(new_msg->msg == NULL) {
-        printf("Memory allocation failed for msg\n");
-        exit(1);
-    }
-
-    strcpy(new_msg->msg, msg);
-
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    char buffer[64];
-    strftime(buffer, sizeof(buffer),"%Y-%m-%d %H:%M:%S", t);
-    new_msg->timestamp = malloc((strlen(buffer) + 1) * sizeof(char));
-    strcpy(new_msg->timestamp, buffer);
-    new_msg->next = NULL;
-
-    return new_msg;
+    return val;
 }
 
-void store_msg(msg_node* new_msg) {
-    if(head == NULL) {
-        head = new_msg;
-        tail = head;
-    } else {
-        tail->next = new_msg;
-        new_msg->prev = tail;
-        tail = tail->next;
-    }
-}
-
-void delete_msg(msg_node* msg) {
-    if(msg == NULL) return;
-
-    if(msg->prev != NULL) {
-        msg->prev->next = msg->next;
-    } else {
-        head = msg->next;
-    }
-
-    if(msg->next != NULL) {
-        msg->next->prev = msg->prev;
-    } else {
-        tail = msg->prev;
-    }
-
-    free(msg->msg);
-    free(msg->timestamp);
-    free(msg);
-}
-
-//reads msgs from clients and sends them to all other clients
+//handle client msgs
 void* server_msg_process(void* input) {
     printf("%s() Waiting for incoming data\n", __FUNCTION__);
     while(1) {
@@ -201,33 +153,46 @@ void* server_msg_process(void* input) {
                     pfds_clients[i] = pfds_clients[fd_count - 1];
                     fd_count--;
 
-                    //delete all messages from this client
-                    msg_node* current = head;
-                    while(current != NULL) {
-                        msg_node* next = current->next;
-                        if(current->client_id == i) {
-                            delete_msg(current);
-                        }
-                        current = next;
-                    }
-                    
                     continue;
                 }
 
                 printf("Data found from client.  i=%d msg='%s'\n", i, msg);
 
-                printf("All messages so far:\n");
-                msg_node* current = head;
-                while(current != NULL) {
-                    printf("msg: %s at %s\n", current->msg, current->timestamp);
-                    current = current->next;
+                char* first_word = strtok(msg, " ");
+                //split these into functions
+                if(first_word != NULL && strcmp(first_word, "SETN") == 0){
+                    char* key = strtok(NULL, " ");
+                    char* val_str = strtok(NULL, " ");
+
+                    if(key == NULL || val_str == NULL || is_int(val_str) == false) {
+                        printf("Invalid SETN command format. Expected: 'SETN <str> <int>'\n");
+                    } else {
+                        int val = atoi(val_str);
+                        store_val(key, val);
+                    }
+
+                    continue;
+                } else if(first_word != NULL && strcmp(first_word, "GETN") == 0){
+                    char* key = strtok(NULL, " ");
+
+                    if(key == NULL) {
+                        printf("Invalid GETN command format. Expected: 'GETN <str>'\n");
+                    } else {
+                        //TODO: send val back to client instead of just printing it here
+                        int val = retrieve_val(key);
+                        printf("GETN result for key '%s': %d\n", key, val);
+
+                        char str[20];
+                        snprintf(str, sizeof(str), "%d", val);
+
+                        char buff[2 * sizeof(int) + MAX_SENDING_LEN];
+                        buff[0] = 2;
+                        buff[1] = strlen(str);
+                        slice_snd(strlen(str), buff, str, *client_sock);
+                    }
+
+                    continue;
                 }
-
-                //add msg to history
-                msg_node* new_msg = create_msg_node(msg, i);
-
-                printf("Storing new msg: %s at %s\n", new_msg->msg, new_msg->timestamp);
-                store_msg(new_msg);
 
                 int j;
                 for(j = 0; j < fd_count; j++) {
@@ -246,7 +211,6 @@ void* server_msg_process(void* input) {
         }
     }
 }
-
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
@@ -278,9 +242,6 @@ int main(int argc, char* argv[]) {
     pfds_server.fd = socket_id;
     pfds_server.events = POLLIN;
 
-    head = NULL;
-    tail = NULL;
-
     pthread_t accept_thread;
     pthread_t server_process_msg_thread;
     pthread_create(&accept_thread, NULL, (void *) server_accept, &pfds_server);
@@ -288,11 +249,11 @@ int main(int argc, char* argv[]) {
 
     pthread_join(accept_thread, NULL);
     pthread_join(server_process_msg_thread, NULL);
+
+    
     
     printf("exiting\n");
 
 }
 
 //Exit str doesnt end other connection
-//when a client disconnects, remove all msgs from the client in the list. make sure to deallocate all info in each node
-//when a client connects, receivs all msgs from history
