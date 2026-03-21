@@ -108,17 +108,59 @@ bool is_int(char* str) {
 }
 
 void store_val(char* key, int val) {
-    set_val(key, val);
+    json_set_val(key, val);
 }
 
-int retrieve_val(char* key) {
-    int val = get_val(key);
+//pointer parameter for int vals
+JsonError retrieve_val(char* key, int* out_val) {
+    int val;
+    JsonError err = json_get_val(key, &val);
     
-    if(val == -1) {
-        printf("Error retrieving value for key '%s'\n", key);
+    if(err < 0) {
+        printf("Error retrieving value for key '%s'. Error code: %d'\n", key, err);
     }
 
-    return val;
+    *out_val = val;
+    return err;
+}
+
+void setn() {
+    //strtok NULL as first arg starts on same string where it left off from the first call
+    char* key = strtok(NULL, " ");
+    char* val_str = strtok(NULL, " ");
+
+    if(key == NULL || val_str == NULL || is_int(val_str) == false) {
+        printf("Invalid SETN command format. Expected: 'SETN <str> <int>'\n");
+    } else {
+        int val = atoi(val_str);
+        store_val(key, val);
+    }
+}
+
+void getn(int* client_sock) {
+    char* key = strtok(NULL, " ");
+
+    if(key == NULL) {
+        printf("Invalid GETN command format. Expected: 'GETN <str>'\n");
+    } else {
+        int val;
+        JsonError err = retrieve_val(key, &val);
+
+        printf("GETN result for key '%s': %d\n", key, val);
+
+        char str[20];
+
+        if(err < 0){
+            strcpy(str, "ERR");
+        } else {
+            snprintf(str, sizeof(str), "%d", val);
+        }
+
+        char buff[2 * sizeof(int) + MAX_SENDING_LEN];
+        buff[0] = 2;
+        buff[1] = strlen(str);
+        slice_snd(strlen(str), buff, str, *client_sock);
+    }
 }
 
 //handle client msgs
@@ -159,37 +201,12 @@ void* server_msg_process(void* input) {
                 printf("Data found from client.  i=%d msg='%s'\n", i, msg);
 
                 char* first_word = strtok(msg, " ");
-                //split these into functions
                 if(first_word != NULL && strcmp(first_word, "SETN") == 0){
-                    char* key = strtok(NULL, " ");
-                    char* val_str = strtok(NULL, " ");
-
-                    if(key == NULL || val_str == NULL || is_int(val_str) == false) {
-                        printf("Invalid SETN command format. Expected: 'SETN <str> <int>'\n");
-                    } else {
-                        int val = atoi(val_str);
-                        store_val(key, val);
-                    }
+                    setn();
 
                     continue;
                 } else if(first_word != NULL && strcmp(first_word, "GETN") == 0){
-                    char* key = strtok(NULL, " ");
-
-                    if(key == NULL) {
-                        printf("Invalid GETN command format. Expected: 'GETN <str>'\n");
-                    } else {
-                        //TODO: send val back to client instead of just printing it here
-                        int val = retrieve_val(key);
-                        printf("GETN result for key '%s': %d\n", key, val);
-
-                        char str[20];
-                        snprintf(str, sizeof(str), "%d", val);
-
-                        char buff[2 * sizeof(int) + MAX_SENDING_LEN];
-                        buff[0] = 2;
-                        buff[1] = strlen(str);
-                        slice_snd(strlen(str), buff, str, *client_sock);
-                    }
+                    getn(client_sock);
 
                     continue;
                 }

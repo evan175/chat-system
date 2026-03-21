@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include "cJSON.h"
+#include "json_functions.h"
 
 //store file contents in string and return string, make sure to free the returned string after use
 char* json_read_file(char* filename) {
@@ -42,7 +43,7 @@ char* json_read_file(char* filename) {
 
 //TODO: overide existing value if key already exists.
 void json_set_val(char* key, int val) {
-    char* json_str = read_file("data.txt");
+    char* json_str = json_read_file("data.txt");
 
     cJSON *json;
 
@@ -67,7 +68,16 @@ void json_set_val(char* key, int val) {
         return;
     }
 
-    cJSON_AddItemToObject(json, key, val_obj);
+    //check if key is already in json
+    cJSON *existing_item = cJSON_GetObjectItemCaseSensitive(json, key);
+    if(existing_item != NULL) {
+        printf("Key '%s' already exists. Updating value to %d.\n", key, val);
+        existing_item->type = cJSON_Number;
+        cJSON_SetNumberValue(existing_item, val);
+    } else {
+        cJSON_AddItemToObject(json, key, val_obj);
+    }
+
     char* updated_json_str = cJSON_Print(json);
     if (updated_json_str == NULL) {
         printf("Error printing JSON\n");
@@ -94,27 +104,26 @@ void json_set_val(char* key, int val) {
     cJSON_Delete(json);
 }
 
-//define enum to represent error states for get_val
-int json_get_val(char* key){
-    char* json_str = read_file("data.txt");
+JsonError json_get_val(char* key, int* out_val) {
+    char* json_str = json_read_file("data.txt");
     if (json_str == NULL || json_str[0] == '\0') {
-        printf("File not found or empty. Returning -1.\n");
-        return -1;
+        printf("File not found or empty.\n");
+        return JSON_FILE_ERROR;
     }
 
     cJSON *json = cJSON_Parse(json_str);
     if (json == NULL) {
         printf("Error parsing JSON\n");
         free(json_str);
-        return -1;
+        return JSON_PARSE_ERROR;
     }
 
     cJSON *val_item = cJSON_GetObjectItemCaseSensitive(json, key);
     if (val_item == NULL || !cJSON_IsNumber(val_item)) {
-        printf("Key not found or not a number. Returning -1.\n");
+        printf("Key not found or val is not a number.\n");
         cJSON_Delete(json);
         free(json_str);
-        return -1;
+        return JSON_KEY_NOT_FOUND;
     }
 
     int val = val_item->valueint;
@@ -122,5 +131,6 @@ int json_get_val(char* key){
     cJSON_Delete(json);
     free(json_str);
 
-    return val;
+    *out_val = val;
+    return JSON_SUCCESS;
 }
